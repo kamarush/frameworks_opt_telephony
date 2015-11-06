@@ -581,7 +581,9 @@ public final class DataConnection extends StateMachine {
                 discReason = RILConstants.DEACTIVATE_REASON_PDP_RESET;
             }
         }
-        if (mPhone.mCi.getRadioState().isOn()) {
+        if (mPhone.mCi.getRadioState().isOn()
+                || (mPhone.getServiceState().getRilDataRadioTechnology()
+                        == ServiceState.RIL_RADIO_TECHNOLOGY_IWLAN )) {
             if (DBG) log("tearDownData radio is on, call deactivateDataCall");
             mPhone.mCi.deactivateDataCall(mCid, discReason,
                     obtainMessage(EVENT_DEACTIVATE_DONE, mTag, 0, o));
@@ -944,7 +946,7 @@ public final class DataConnection extends StateMachine {
                     default:
                 }
             }
-            ConnectivityManager.maybeMarkCapabilitiesRestricted(result);
+            result.maybeMarkCapabilitiesRestricted();
         }
         int up = 14;
         int down = 14;
