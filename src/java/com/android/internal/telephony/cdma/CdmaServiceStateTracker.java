@@ -815,6 +815,12 @@ public class CdmaServiceStateTracker extends ServiceStateTracker {
                 return;
             }
 
+            if (!mCi.getRadioState().isOn()) {
+                // Radio has crashed or turned off.
+                cancelPollState();
+                return;
+            }
+
             if (err != CommandException.Error.OP_NOT_ALLOWED_BEFORE_REG_NW) {
                 loge("handlePollStateResult: RIL returned an error where it must succeed"
                         + ar.exception);
@@ -1016,10 +1022,8 @@ public class CdmaServiceStateTracker extends ServiceStateTracker {
             setSignalStrengthDefaultValues();
             mGotCountryCode = false;
 
-            if (ServiceState.RIL_RADIO_TECHNOLOGY_IWLAN
-                        != mSS.getRilDataRadioTechnology()) {
-                pollStateDone();
-            }
+            pollStateDone();
+            break;
 
         default:
             // Issue all poll-related commands at once, then count
@@ -1166,8 +1170,6 @@ public class CdmaServiceStateTracker extends ServiceStateTracker {
 
         boolean hasLocationChanged = !mNewCellLoc.equals(mCellLoc);
 
-		resetServiceStateInIwlanMode();
-
         TelephonyManager tm =
                 (TelephonyManager) mPhone.getContext().getSystemService(Context.TELEPHONY_SERVICE);
 
@@ -1196,11 +1198,6 @@ public class CdmaServiceStateTracker extends ServiceStateTracker {
 
         if (hasRilDataRadioTechnologyChanged) {
             tm.setDataNetworkTypeForPhone(mPhone.getPhoneId(), mSS.getRilDataRadioTechnology());
-
-            if (ServiceState.RIL_RADIO_TECHNOLOGY_IWLAN
-                        == mSS.getRilDataRadioTechnology()) {
-                log("pollStateDone: IWLAN enabled");
-            }
         }
 
         if (hasRegistered) {
@@ -1286,12 +1283,7 @@ public class CdmaServiceStateTracker extends ServiceStateTracker {
 
         if (hasCdmaDataConnectionChanged || hasRilDataRadioTechnologyChanged) {
             notifyDataRegStateRilRadioTechnologyChanged();
-            if (ServiceState.RIL_RADIO_TECHNOLOGY_IWLAN
-                        == mSS.getRilDataRadioTechnology()) {
-                mPhone.notifyDataConnection(Phone.REASON_IWLAN_AVAILABLE);
-            } else {
-                mPhone.notifyDataConnection(null);
-            }
+            mPhone.notifyDataConnection(null);
         }
 
         if (hasVoiceRoamingOn) {

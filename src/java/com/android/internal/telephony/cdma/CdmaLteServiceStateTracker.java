@@ -25,10 +25,7 @@ import com.android.internal.telephony.uicc.RuimRecords;
 import com.android.internal.telephony.uicc.IccCardApplicationStatus.AppState;
 import com.android.internal.telephony.TelephonyIntents;
 import com.android.internal.telephony.Phone;
-import com.android.internal.telephony.PhoneConstants;
 import com.android.internal.telephony.PhoneFactory;
-import com.android.internal.telephony.dataconnection.DcTrackerBase;
-import com.android.internal.telephony.PhoneConstants;
 
 import android.telephony.CellInfo;
 import android.telephony.CellInfoLte;
@@ -279,10 +276,8 @@ public class CdmaLteServiceStateTracker extends CdmaServiceStateTracker {
                 setSignalStrengthDefaultValues();
                 mGotCountryCode = false;
 
-                if (ServiceState.RIL_RADIO_TECHNOLOGY_IWLAN
-                        != mSS.getRilDataRadioTechnology()) {
-                    pollStateDone();
-                }
+                pollStateDone();
+                break;
 
             default:
                 // Issue all poll-related commands at once, then count
@@ -367,8 +362,6 @@ public class CdmaLteServiceStateTracker extends CdmaServiceStateTracker {
 
         boolean hasLocationChanged = !mNewCellLoc.equals(mCellLoc);
 
-        resetServiceStateInIwlanMode();
-
         boolean has4gHandoff =
                 mNewSS.getDataRegState() == ServiceState.STATE_IN_SERVICE &&
                 (((mSS.getRilDataRadioTechnology() == ServiceState.RIL_RADIO_TECHNOLOGY_LTE) &&
@@ -434,12 +427,7 @@ public class CdmaLteServiceStateTracker extends CdmaServiceStateTracker {
 
         if (hasDataRadioTechnologyChanged) {
             tm.setDataNetworkTypeForPhone(mPhone.getPhoneId(), mSS.getRilDataRadioTechnology());
-        
-			if (ServiceState.RIL_RADIO_TECHNOLOGY_IWLAN
-                        == mSS.getRilDataRadioTechnology()) {
-                log("pollStateDone: IWLAN enabled");
-            }
-		}
+        }
 
         if (hasRegistered) {
             mNetworkAttachedRegistrants.notifyRegistrants();
@@ -550,12 +538,7 @@ public class CdmaLteServiceStateTracker extends CdmaServiceStateTracker {
 
         if ((hasCdmaDataConnectionChanged || hasDataRadioTechnologyChanged)) {
             notifyDataRegStateRilRadioTechnologyChanged();
-            if (ServiceState.RIL_RADIO_TECHNOLOGY_IWLAN
-                        == mSS.getRilDataRadioTechnology()) {
-                mPhone.notifyDataConnection(Phone.REASON_IWLAN_AVAILABLE);
-            } else {
-                mPhone.notifyDataConnection(null);
-            }
+            mPhone.notifyDataConnection(null);
         }
 
         if (hasVoiceRoamingOn) {
