@@ -36,6 +36,7 @@ import com.android.internal.telephony.CallTracker;
 import com.android.internal.telephony.CommandsInterface;
 import com.android.internal.telephony.Connection;
 import com.android.internal.telephony.DriverCall;
+import com.android.internal.telephony.LastCallFailCause;
 import com.android.internal.telephony.Phone;
 import com.android.internal.telephony.PhoneBase;
 import com.android.internal.telephony.PhoneConstants;
@@ -46,6 +47,7 @@ import com.android.internal.telephony.imsphone.ImsPhoneConnection;
 import java.io.FileDescriptor;
 import java.io.PrintWriter;
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 
 
@@ -122,6 +124,11 @@ public final class CdmaCallTracker extends CallTracker {
 
         clearDisconnected();
 
+        for (CdmaConnection cdmaConnection : mConnections) {
+            if (cdmaConnection != null) {
+                cdmaConnection.dispose();
+            }
+        }
     }
 
     @Override
@@ -219,7 +226,7 @@ public final class CdmaCallTracker extends CallTracker {
             return dialThreeWay(dialString);
         }
 
-        mPendingMO = new CdmaConnection(mPhone.getContext(), checkForTestEmergencyNumber(dialString),
+        mPendingMO = new CdmaConnection(mPhone, checkForTestEmergencyNumber(dialString),
                 this, mForegroundCall);
         mHangupPendingMO = false;
 
@@ -273,7 +280,7 @@ public final class CdmaCallTracker extends CallTracker {
             disableDataCallInEmergencyCall(dialString);
 
             // Attach the new connection to foregroundCall
-            mPendingMO = new CdmaConnection(mPhone.getContext(),
+            mPendingMO = new CdmaConnection(mPhone,
                                 checkForTestEmergencyNumber(dialString), this, mForegroundCall);
             // Some network need a empty flash before sending the normal one
             m3WayCallFlashDelay = mPhone.getContext().getResources()
@@ -356,6 +363,7 @@ public final class CdmaCallTracker extends CallTracker {
 
         updatePhoneState();
         mPhone.notifyPreciseCallStateChanged();
+
     }
 
     boolean
@@ -521,6 +529,8 @@ public final class CdmaCallTracker extends CallTracker {
         boolean needsPollDelay = false;
         boolean unknownConnectionAppeared = false;
 
+        boolean noConnectionExists = true;
+
         for (int i = 0, curDC = 0, dcSize = polledCalls.size()
                 ; i < mConnections.length; i++) {
             CdmaConnection conn = mConnections[i];
@@ -535,6 +545,10 @@ public final class CdmaCallTracker extends CallTracker {
                 } else {
                     dc = null;
                 }
+            }
+
+            if (conn != null || dc != null) {
+                noConnectionExists = false;
             }
 
             if (DBG_POLL) log("poll: conn[i=" + i + "]=" +
@@ -576,12 +590,19 @@ public final class CdmaCallTracker extends CallTracker {
                     if (Phone.DEBUG_PHONE) {
                         log("pendingMo=" + mPendingMO + ", dc=" + dc);
                     }
-                    mConnections[i] = new CdmaConnection(mPhone.getContext(), dc, this, i);
+                    mConnections[i] = new CdmaConnection(mPhone, dc, this, i);
 
                     Connection hoConnection = getHoConnection(dc);
                     if (hoConnection != null) {
                         // Single Radio Voice Call Continuity (SRVCC) completed
                         mConnections[i].migrateFrom(hoConnection);
+                        // Updating connect time for silent redial cases (ex: Calls are transferred
+                        // from DIALING/ALERTING/INCOMING/WAITING to ACTIVE)
+                        if (hoConnection.mPreHandoverState != CdmaCall.State.ACTIVE &&
+                                hoConnection.mPreHandoverState != CdmaCall.State.HOLDING) {
+                            mConnections[i].onConnectedInOrOut();
+                        }
+
                         mHandoverConnections.remove(hoConnection);
                         mPhone.notifyHandoverStateChanged(mConnections[i]);
                     } else {
@@ -592,7 +613,6 @@ public final class CdmaCallTracker extends CallTracker {
                             newUnknown = mConnections[i];
                         }
                     }
-                    checkAndEnableDataCallAfterEmergencyCallDropped();
                 }
                 hasNonHangupStateChanged = true;
             } else if (conn != null && dc == null) {
@@ -674,6 +694,12 @@ public final class CdmaCallTracker extends CallTracker {
             }
         }
 
+        // Safety check so that obj is not stuck with mIsInEmergencyCall set to true (and data
+        // disabled). This should never happen though.
+        if (noConnectionExists) {
+            checkAndEnableDataCallAfterEmergencyCallDropped();
+        }
+
         // This is the first poll after an ATD.
         // We expect the pending call to appear in the list
         // If it does not, we land here
@@ -687,6 +713,7 @@ public final class CdmaCallTracker extends CallTracker {
             if( mPendingCallInEcm) {
                 mPendingCallInEcm = false;
             }
+            checkAndEnableDataCallAfterEmergencyCallDropped();
         }
 
         if (newRinging != null) {
@@ -698,6 +725,7 @@ public final class CdmaCallTracker extends CallTracker {
         // These cases need no "last call fail" reason
         for (int i = mDroppedDuringPoll.size() - 1; i >= 0 ; i--) {
             CdmaConnection conn = mDroppedDuringPoll.get(i);
+            boolean wasDisconnected = false;
 
             if (conn.isIncoming() && conn.getConnectTime() == 0) {
                 // Missed or rejected call
@@ -714,18 +742,27 @@ public final class CdmaCallTracker extends CallTracker {
                 }
                 mDroppedDuringPoll.remove(i);
                 hasAnyCallDisconnected |= conn.onDisconnect(cause);
+                wasDisconnected = true;
             } else if (conn.mCause == DisconnectCause.LOCAL
                     || conn.mCause == DisconnectCause.INVALID_NUMBER) {
                 mDroppedDuringPoll.remove(i);
                 hasAnyCallDisconnected |= conn.onDisconnect(conn.mCause);
+                wasDisconnected = true;
+            }
+
+            if (wasDisconnected && unknownConnectionAppeared && conn == newUnknown) {
+                unknownConnectionAppeared = false;
+                newUnknown = null;
             }
         }
 
         /* Disconnect any pending Handover connections */
-        for (Connection hoConnection : mHandoverConnections) {
-            log("handlePollCalls - disconnect hoConn= " + hoConnection.toString());
+        for (Iterator<Connection> it = mHandoverConnections.iterator();
+                it.hasNext();) {
+            Connection hoConnection = it.next();
+            log("handlePollCalls - disconnect hoConn= " + hoConnection);
             ((ImsPhoneConnection)hoConnection).onDisconnect(DisconnectCause.NOT_VALID);
-            mHandoverConnections.remove(hoConnection);
+            it.remove();
         }
 
         // Any non-local disconnects: determine cause
@@ -1006,6 +1043,7 @@ public final class CdmaCallTracker extends CallTracker {
 
             case EVENT_GET_LAST_CALL_FAIL_CAUSE:
                 int causeCode;
+                String vendorCause = null;
                 ar = (AsyncResult)msg.obj;
 
                 operationComplete();
@@ -1017,7 +1055,9 @@ public final class CdmaCallTracker extends CallTracker {
                     Rlog.i(LOG_TAG,
                             "Exception during getLastCallFailCause, assuming normal disconnect");
                 } else {
-                    causeCode = ((int[])ar.result)[0];
+                    LastCallFailCause failCause = (LastCallFailCause)ar.result;
+                    causeCode = failCause.causeCode;
+                    vendorCause = failCause.vendorCause;
                 }
 
                 for (int i = 0, s =  mDroppedDuringPoll.size()
@@ -1025,7 +1065,7 @@ public final class CdmaCallTracker extends CallTracker {
                 ) {
                     CdmaConnection conn = mDroppedDuringPoll.get(i);
 
-                    conn.onRemoteDisconnect(causeCode);
+                    conn.onRemoteDisconnect(causeCode, vendorCause);
                 }
 
                 updatePhoneState();
@@ -1116,11 +1156,15 @@ public final class CdmaCallTracker extends CallTracker {
     private void disableDataCallInEmergencyCall(String dialString) {
         if (PhoneNumberUtils.isLocalEmergencyNumber(mPhone.getContext(), dialString)) {
             if (Phone.DEBUG_PHONE) log("disableDataCallInEmergencyCall");
-            mIsInEmergencyCall = true;
-            mPhone.mDcTracker.setInternalDataEnabled(false);
+            setIsInEmergencyCall();
         }
     }
 
+    protected void setIsInEmergencyCall() {
+        mIsInEmergencyCall = true;
+        mPhone.mDcTracker.setInternalDataEnabled(false);
+        mPhone.notifyEmergencyCallRegistrants(true);
+    }
     /**
      * Check and enable data call after an emergency call is dropped if it's
      * not in ECM
@@ -1135,6 +1179,7 @@ public final class CdmaCallTracker extends CallTracker {
             if (inEcm.compareTo("false") == 0) {
                 // Re-initiate data connection
                 mPhone.mDcTracker.setInternalDataEnabled(true);
+                mPhone.notifyEmergencyCallRegistrants(false);
             }
         }
     }

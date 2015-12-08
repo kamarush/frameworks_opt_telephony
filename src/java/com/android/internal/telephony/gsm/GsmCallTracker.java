@@ -17,6 +17,7 @@
 package com.android.internal.telephony.gsm;
 
 import android.os.AsyncResult;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Message;
 import android.os.Registrant;
@@ -28,6 +29,7 @@ import android.telephony.ServiceState;
 import android.telephony.TelephonyManager;
 import android.telephony.gsm.GsmCellLocation;
 import android.util.EventLog;
+import java.util.Iterator;
 import android.telephony.Rlog;
 
 import com.android.internal.telephony.Call;
@@ -37,6 +39,7 @@ import com.android.internal.telephony.CommandsInterface;
 import com.android.internal.telephony.Connection;
 import com.android.internal.telephony.DriverCall;
 import com.android.internal.telephony.EventLogTags;
+import com.android.internal.telephony.LastCallFailCause;
 import com.android.internal.telephony.Phone;
 import com.android.internal.telephony.PhoneBase;
 import com.android.internal.telephony.PhoneConstants;
@@ -65,7 +68,7 @@ public final class GsmCallTracker extends CallTracker {
 
     //***** Constants
 
-    static final int MAX_CONNECTIONS = 7;   // only 7 connections allowed in GSM
+    static final int MAX_CONNECTIONS = 19;   // 7 allowed in GSM + 12 from IMS for SRVCC
     static final int MAX_CONNECTIONS_PER_CALL = 5; // only 5 connections allowed per call
 
     //***** Instance Variables
@@ -116,8 +119,13 @@ public final class GsmCallTracker extends CallTracker {
         mCi.unregisterForOn(this);
         mCi.unregisterForNotAvailable(this);
 
-
         clearDisconnected();
+
+        for (GsmConnection gsmConnection : mConnections) {
+            if (gsmConnection != null) {
+                gsmConnection.dispose();
+            }
+        }
     }
 
     @Override
@@ -169,7 +177,8 @@ public final class GsmCallTracker extends CallTracker {
      * clirMode is one of the CLIR_ constants
      */
     synchronized Connection
-    dial (String dialString, int clirMode, UUSInfo uusInfo) throws CallStateException {
+    dial (String dialString, int clirMode, UUSInfo uusInfo, Bundle intentExtras)
+            throws CallStateException {
         // note that this triggers call state changed notif
         clearDisconnected();
 
@@ -189,6 +198,14 @@ public final class GsmCallTracker extends CallTracker {
             // and we need to make sure the foreground call is clear
             // for the newly dialed connection
             switchWaitingOrHoldingAndActive();
+            // This is a hack to delay DIAL so that it is sent out to RIL only after
+            // EVENT_SWITCH_RESULT is received. We've seen failures when adding a new call to
+            // multi-way conference calls due to DIAL being sent out before SWITCH is processed
+            try {
+                Thread.sleep(500);
+            } catch (InterruptedException e) {
+                // do nothing
+            }
 
             // Fake local state so that
             // a) foregroundCall is empty for the newly dialed connection
@@ -202,7 +219,7 @@ public final class GsmCallTracker extends CallTracker {
             throw new CallStateException("cannot dial in current state");
         }
 
-        mPendingMO = new GsmConnection(mPhone.getContext(), checkForTestEmergencyNumber(dialString),
+        mPendingMO = new GsmConnection(mPhone, checkForTestEmergencyNumber(dialString),
                 this, mForegroundCall);
         mHangupPendingMO = false;
 
@@ -239,13 +256,13 @@ public final class GsmCallTracker extends CallTracker {
     }
 
     Connection
-    dial(String dialString, UUSInfo uusInfo) throws CallStateException {
-        return dial(dialString, CommandsInterface.CLIR_DEFAULT, uusInfo);
+    dial(String dialString, UUSInfo uusInfo, Bundle intentExtras) throws CallStateException {
+        return dial(dialString, CommandsInterface.CLIR_DEFAULT, uusInfo, intentExtras);
     }
 
     Connection
-    dial(String dialString, int clirMode) throws CallStateException {
-        return dial(dialString, clirMode, null);
+    dial(String dialString, int clirMode, Bundle intentExtras) throws CallStateException {
+        return dial(dialString, clirMode, null, intentExtras);
     }
 
     void
@@ -439,7 +456,7 @@ public final class GsmCallTracker extends CallTracker {
         }
 
         Connection newRinging = null; //or waiting
-        Connection newUnknown = null;
+        ArrayList<Connection> newUnknownConnections = new ArrayList<Connection>();
         boolean hasNonHangupStateChanged = false;   // Any change besides
                                                     // a dropped connection
         boolean hasAnyCallDisconnected = false;
@@ -493,15 +510,29 @@ public final class GsmCallTracker extends CallTracker {
                         return;
                     }
                 } else {
-                    mConnections[i] = new GsmConnection(mPhone.getContext(), dc, this, i);
+                    mConnections[i] = new GsmConnection(mPhone, dc, this, i);
 
                     Connection hoConnection = getHoConnection(dc);
                     if (hoConnection != null) {
                         // Single Radio Voice Call Continuity (SRVCC) completed
                         mConnections[i].migrateFrom(hoConnection);
-                        if (!hoConnection.isMultiparty()) {
-                            // Remove only if it is not multiparty
-                            mHandoverConnections.remove(hoConnection);
+                        // Updating connect time for silent redial cases (ex: Calls are transferred
+                        // from DIALING/ALERTING/INCOMING/WAITING to ACTIVE)
+                        if (hoConnection.mPreHandoverState != GsmCall.State.ACTIVE &&
+                                hoConnection.mPreHandoverState != GsmCall.State.HOLDING) {
+                            mConnections[i].onConnectedInOrOut();
+                        }
+
+                        mHandoverConnections.remove(hoConnection);
+                        for (Iterator<Connection> it = mHandoverConnections.iterator();
+                            it.hasNext();) {
+                            Connection c = it.next();
+                            Rlog.i(LOG_TAG, "HO Conn state is " + c.mPreHandoverState);
+                            if (c.mPreHandoverState == mConnections[i].getState()) {
+                                Rlog.i(LOG_TAG, "Removing HO conn "
+                                    + hoConnection + c.mPreHandoverState);
+                                it.remove();
+                            }
                         }
                         mPhone.notifyHandoverStateChanged(mConnections[i]);
                     } else if ( mConnections[i].getCall() == mRingingCall ) { // it's a ringing call
@@ -526,7 +557,7 @@ public final class GsmCallTracker extends CallTracker {
                             }
                         }
 
-                        newUnknown = mConnections[i];
+                        newUnknownConnections.add(mConnections[i]);
 
                         unknownConnectionAppeared = true;
                     }
@@ -544,7 +575,7 @@ public final class GsmCallTracker extends CallTracker {
                 // we were tracking. Assume dropped call and new call
 
                 mDroppedDuringPoll.add(conn);
-                mConnections[i] = new GsmConnection (mPhone.getContext(), dc, this, i);
+                mConnections[i] = new GsmConnection (mPhone, dc, this, i);
 
                 if (mConnections[i].getCall() == mRingingCall) {
                     newRinging = mConnections[i];
@@ -621,10 +652,12 @@ public final class GsmCallTracker extends CallTracker {
         }
 
         /* Disconnect any pending Handover connections */
-        for (Connection hoConnection : mHandoverConnections) {
-            log("handlePollCalls - disconnect hoConn= " + hoConnection.toString());
+        for (Iterator<Connection> it = mHandoverConnections.iterator();
+                it.hasNext();) {
+            Connection hoConnection = it.next();
+            log("handlePollCalls - disconnect hoConn= " + hoConnection);
             ((ImsPhoneConnection)hoConnection).onDisconnect(DisconnectCause.NOT_VALID);
-            mHandoverConnections.remove(hoConnection);
+            it.remove();
         }
 
         // Any non-local disconnects: determine cause
@@ -649,7 +682,10 @@ public final class GsmCallTracker extends CallTracker {
         updatePhoneState();
 
         if (unknownConnectionAppeared) {
-            mPhone.notifyUnknownConnection(newUnknown);
+           for (Connection c : newUnknownConnections) {
+               log("Notify unknown for " + c);
+               mPhone.notifyUnknownConnection(c);
+           }
         }
 
         if (hasNonHangupStateChanged || newRinging != null || hasAnyCallDisconnected) {
@@ -907,6 +943,7 @@ public final class GsmCallTracker extends CallTracker {
 
             case EVENT_GET_LAST_CALL_FAIL_CAUSE:
                 int causeCode;
+                String vendorCause = null;
                 ar = (AsyncResult)msg.obj;
 
                 operationComplete();
@@ -918,7 +955,9 @@ public final class GsmCallTracker extends CallTracker {
                     Rlog.i(LOG_TAG,
                             "Exception during getLastCallFailCause, assuming normal disconnect");
                 } else {
-                    causeCode = ((int[])ar.result)[0];
+                    LastCallFailCause failCause = (LastCallFailCause)ar.result;
+                    causeCode = failCause.causeCode;
+                    vendorCause = failCause.vendorCause;
                 }
                 // Log the causeCode if its not normal
                 if (causeCode == CallFailCause.NO_CIRCUIT_AVAIL ||
@@ -939,7 +978,7 @@ public final class GsmCallTracker extends CallTracker {
                 ) {
                     GsmConnection conn = mDroppedDuringPoll.get(i);
 
-                    conn.onRemoteDisconnect(causeCode);
+                    conn.onRemoteDisconnect(causeCode, vendorCause);
                 }
 
                 updatePhoneState();

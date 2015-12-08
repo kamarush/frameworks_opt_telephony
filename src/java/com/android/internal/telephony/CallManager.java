@@ -115,6 +115,8 @@ public final class CallManager {
     // FIXME Taken from klp-sprout-dev but setAudioMode was removed in L.
     //private boolean mIsEccDialing = false;
 
+    private Object mRegistrantidentifier = new Object();
+
     // state registrants
     protected final RegistrantList mPreciseCallStateRegistrants
     = new RegistrantList();
@@ -440,11 +442,10 @@ public final class CallManager {
                         phone.getPhoneName() + " " + phone + ")");
             }
 
-            // ImsPhone is unregistered in PhoneBase.updateImsPhone()
-            //Phone vPhone = basePhone.getImsPhone();
-            //if (vPhone != null) {
-            //   unregisterPhone(vPhone);
-            //}
+            Phone vPhone = basePhone.getImsPhone();
+            if (vPhone != null) {
+               unregisterPhone(vPhone);
+            }
 
             mPhones.remove(basePhone);
             mRingingCalls.remove(basePhone.getRingingCall());
@@ -593,6 +594,10 @@ public final class CallManager {
         return ((defaultPhone == null) ? null : defaultPhone.getContext());
     }
 
+    public Object getRegistrantIdentifier() {
+        return mRegistrantidentifier;
+    }
+
     private void registerForPhoneStates(Phone phone) {
         // We need to keep a mapping of handler to Phone for proper unregistration.
         // TODO: Clean up this solution as it is just a work around for each Phone instance
@@ -610,21 +615,39 @@ public final class CallManager {
         mHandlerMap.put(phone, handler);
 
         // for common events supported by all phones
-        phone.registerForPreciseCallStateChanged(handler, EVENT_PRECISE_CALL_STATE_CHANGED, null);
-        phone.registerForDisconnect(handler, EVENT_DISCONNECT, null);
-        phone.registerForNewRingingConnection(handler, EVENT_NEW_RINGING_CONNECTION, null);
-        phone.registerForUnknownConnection(handler, EVENT_UNKNOWN_CONNECTION, null);
-        phone.registerForIncomingRing(handler, EVENT_INCOMING_RING, null);
-        phone.registerForRingbackTone(handler, EVENT_RINGBACK_TONE, null);
-        phone.registerForInCallVoicePrivacyOn(handler, EVENT_IN_CALL_VOICE_PRIVACY_ON, null);
-        phone.registerForInCallVoicePrivacyOff(handler, EVENT_IN_CALL_VOICE_PRIVACY_OFF, null);
-        phone.registerForDisplayInfo(handler, EVENT_DISPLAY_INFO, null);
-        phone.registerForSignalInfo(handler, EVENT_SIGNAL_INFO, null);
-        phone.registerForResendIncallMute(handler, EVENT_RESEND_INCALL_MUTE, null);
-        phone.registerForMmiInitiate(handler, EVENT_MMI_INITIATE, null);
-        phone.registerForMmiComplete(handler, EVENT_MMI_COMPLETE, null);
-        phone.registerForSuppServiceFailed(handler, EVENT_SUPP_SERVICE_FAILED, null);
-        phone.registerForServiceStateChanged(handler, EVENT_SERVICE_STATE_CHANGED, null);
+        // The mRegistrantIdentifier passed here, is to identify in the PhoneBase
+        // that the registrants are coming from the CallManager.
+        phone.registerForPreciseCallStateChanged(handler, EVENT_PRECISE_CALL_STATE_CHANGED,
+                mRegistrantidentifier);
+        phone.registerForDisconnect(handler, EVENT_DISCONNECT,
+                mRegistrantidentifier);
+        phone.registerForNewRingingConnection(handler, EVENT_NEW_RINGING_CONNECTION,
+                mRegistrantidentifier);
+        phone.registerForUnknownConnection(handler, EVENT_UNKNOWN_CONNECTION,
+                mRegistrantidentifier);
+        phone.registerForIncomingRing(handler, EVENT_INCOMING_RING,
+                mRegistrantidentifier);
+        phone.registerForRingbackTone(handler, EVENT_RINGBACK_TONE,
+                mRegistrantidentifier);
+        phone.registerForInCallVoicePrivacyOn(handler, EVENT_IN_CALL_VOICE_PRIVACY_ON,
+                mRegistrantidentifier);
+        phone.registerForInCallVoicePrivacyOff(handler, EVENT_IN_CALL_VOICE_PRIVACY_OFF,
+                mRegistrantidentifier);
+        phone.registerForDisplayInfo(handler, EVENT_DISPLAY_INFO,
+                mRegistrantidentifier);
+        phone.registerForSignalInfo(handler, EVENT_SIGNAL_INFO,
+                mRegistrantidentifier);
+        phone.registerForResendIncallMute(handler, EVENT_RESEND_INCALL_MUTE,
+                mRegistrantidentifier);
+        phone.registerForMmiInitiate(handler, EVENT_MMI_INITIATE,
+                mRegistrantidentifier);
+        phone.registerForMmiComplete(handler, EVENT_MMI_COMPLETE,
+                mRegistrantidentifier);
+        phone.registerForSuppServiceFailed(handler, EVENT_SUPP_SERVICE_FAILED,
+                mRegistrantidentifier);
+        phone.registerForServiceStateChanged(handler, EVENT_SERVICE_STATE_CHANGED,
+                mRegistrantidentifier);
+
         // FIXME Taken from klp-sprout-dev but setAudioMode was removed in L.
         //phone.registerForRadioOffOrNotAvailable(handler, EVENT_RADIO_OFF_OR_NOT_AVAILABLE, null);
 
@@ -742,7 +765,7 @@ public final class CallManager {
         }
 
         // We only support the AUDIO_ONLY video state in this scenario.
-        ringingPhone.acceptCall(VideoProfile.VideoState.AUDIO_ONLY);
+        ringingPhone.acceptCall(VideoProfile.STATE_AUDIO_ONLY);
 
         if (VDBG) {
             Rlog.d(LOG_TAG, "End acceptCall(" +ringingCall + ")");
@@ -1024,7 +1047,7 @@ public final class CallManager {
      */
     public Connection dial(Phone phone, String dialString, UUSInfo uusInfo, int videoState)
             throws CallStateException {
-        return phone.dial(dialString, uusInfo, videoState);
+        return phone.dial(dialString, uusInfo, videoState, null);
     }
 
     /**

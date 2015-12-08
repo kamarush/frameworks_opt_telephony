@@ -16,6 +16,7 @@
 
 package com.android.internal.telephony.dataconnection;
 
+import android.content.Context;
 import android.net.LinkAddress;
 import android.net.NetworkUtils;
 import android.net.LinkProperties.CompareResult;
@@ -25,6 +26,8 @@ import android.os.Handler;
 import android.os.Message;
 import android.os.SystemClock;
 import android.telephony.DataConnectionRealTimeInfo;
+import android.telephony.TelephonyManager;
+import android.telephony.PhoneStateListener;
 import android.telephony.Rlog;
 
 import com.android.internal.telephony.DctConstants;
@@ -73,6 +76,13 @@ class DcController extends StateMachine {
 
     private DccDefaultState mDccDefaultState = new DccDefaultState();
 
+    TelephonyManager mTelephonyManager;
+    private PhoneStateListener mPhoneStateListener;
+
+    //mExecutingCarrierChange tracks whether the phone is currently executing
+    //carrier network change
+    private volatile boolean mExecutingCarrierChange;
+
     /**
      * Constructor.
      *
@@ -91,6 +101,19 @@ class DcController extends StateMachine {
         addState(mDccDefaultState);
         setInitialState(mDccDefaultState);
         log("X ctor");
+
+        mPhoneStateListener = new PhoneStateListener(handler.getLooper()) {
+            @Override
+            public void onCarrierNetworkChange(boolean active) {
+                mExecutingCarrierChange = active;
+            }
+        };
+
+        mTelephonyManager = (TelephonyManager) phone.getContext().getSystemService(Context.TELEPHONY_SERVICE);
+        if(mTelephonyManager != null) {
+            mTelephonyManager.listen(mPhoneStateListener,
+                    PhoneStateListener.LISTEN_CARRIER_NETWORK_CHANGE);
+        }
     }
 
     static DcController makeDcc(PhoneBase phone, DcTrackerBase dct, Handler handler) {
@@ -101,6 +124,7 @@ class DcController extends StateMachine {
 
     void dispose() {
         log("dispose: call quiteNow()");
+        if(mTelephonyManager != null) mTelephonyManager.listen(mPhoneStateListener, 0);
         quitNow();
     }
 
@@ -125,6 +149,10 @@ class DcController extends StateMachine {
         if (DBG && removedDc == null) {
             log("removeActiveDcByCid removedDc=null dc=" + dc);
         }
+    }
+
+    boolean isExecutingCarrierChange() {
+        return mExecutingCarrierChange;
     }
 
     private class DccDefaultState extends State {
@@ -237,7 +265,7 @@ class DcController extends StateMachine {
                             + " newState=" + newState.toString());
                     if (newState.active == DATA_CONNECTION_ACTIVE_PH_LINK_INACTIVE) {
                         if (mDct.mIsCleanupRequired) {
-                            apnsToCleanup.addAll(dc.mApnContexts);
+                            apnsToCleanup.addAll(dc.mApnContexts.keySet());
                             mDct.mIsCleanupRequired = false;
                         } else {
                             DcFailCause failCause = DcFailCause.fromInt(newState.status);
@@ -247,7 +275,7 @@ class DcController extends StateMachine {
                                 mDct.sendRestartRadio();
                             } else if (mDct.isPermanentFail(failCause)) {
                                 if (DBG) log("onDataStateChanged: inactive, add to cleanup list");
-                                apnsToCleanup.addAll(dc.mApnContexts);
+                                apnsToCleanup.addAll(dc.mApnContexts.keySet());
                             } else {
                                 if (DBG) log("onDataStateChanged: inactive, add to retry list");
                                 dcsToRetry.add(dc);
@@ -290,11 +318,11 @@ class DcController extends StateMachine {
                                                     " oldLp=" + result.oldLp +
                                                     " newLp=" + result.newLp);
                                         }
-                                        apnsToCleanup.addAll(dc.mApnContexts);
+                                        apnsToCleanup.addAll(dc.mApnContexts.keySet());
                                     } else {
                                         if (DBG) log("onDataStateChanged: simple change");
 
-                                        for (ApnContext apnContext : dc.mApnContexts) {
+                                        for (ApnContext apnContext : dc.mApnContexts.keySet()) {
                                              mPhone.notifyDataConnection(
                                                  PhoneConstants.REASON_LINK_PROPERTIES_CHANGED,
                                                  apnContext.getApnType());
@@ -306,7 +334,7 @@ class DcController extends StateMachine {
                                     }
                                 }
                             } else {
-                                apnsToCleanup.addAll(dc.mApnContexts);
+                                apnsToCleanup.addAll(dc.mApnContexts.keySet());
                                 if (DBG) {
                                     log("onDataStateChanged: interface change, cleanup apns="
                                             + dc.mApnContexts);
@@ -351,28 +379,28 @@ class DcController extends StateMachine {
                 }
             }
 
-            // Temporary notification until RIL implementation is complete.
-            if (mOverallDataConnectionActiveState != newOverallDataConnectionActiveState) {
-                mOverallDataConnectionActiveState = newOverallDataConnectionActiveState;
-                long time = SystemClock.elapsedRealtimeNanos();
-                int dcPowerState;
-                switch (mOverallDataConnectionActiveState) {
-                    case DATA_CONNECTION_ACTIVE_PH_LINK_INACTIVE:
-                    case DATA_CONNECTION_ACTIVE_PH_LINK_DORMANT:
-                        dcPowerState = DataConnectionRealTimeInfo.DC_POWER_STATE_LOW;
-                        break;
-                    case DATA_CONNECTION_ACTIVE_PH_LINK_UP:
-                        dcPowerState = DataConnectionRealTimeInfo.DC_POWER_STATE_HIGH;
-                        break;
-                    default:
-                        dcPowerState = DataConnectionRealTimeInfo.DC_POWER_STATE_UNKNOWN;
-                        break;
-                }
-                DataConnectionRealTimeInfo dcRtInfo =
-                        new DataConnectionRealTimeInfo(time , dcPowerState);
-                log("onDataStateChanged: notify DcRtInfo changed dcRtInfo=" + dcRtInfo);
-                mPhone.notifyDataConnectionRealTimeInfo(dcRtInfo);
-            }
+            // TODO: b/23319188 Enable/Disable this based on enable/disable of dormancy indications 
+            //if (mOverallDataConnectionActiveState != newOverallDataConnectionActiveState) {
+            //    mOverallDataConnectionActiveState = newOverallDataConnectionActiveState;
+            //    long time = SystemClock.elapsedRealtimeNanos();
+            //    int dcPowerState;
+            //    switch (mOverallDataConnectionActiveState) {
+            //        case DATA_CONNECTION_ACTIVE_PH_LINK_INACTIVE:
+            //        case DATA_CONNECTION_ACTIVE_PH_LINK_DORMANT:
+            //            dcPowerState = DataConnectionRealTimeInfo.DC_POWER_STATE_LOW;
+            //            break;
+            //        case DATA_CONNECTION_ACTIVE_PH_LINK_UP:
+            //            dcPowerState = DataConnectionRealTimeInfo.DC_POWER_STATE_HIGH;
+            //            break;
+            //        default:
+            //            dcPowerState = DataConnectionRealTimeInfo.DC_POWER_STATE_UNKNOWN;
+            //            break;
+            //    }
+            //    DataConnectionRealTimeInfo dcRtInfo =
+            //            new DataConnectionRealTimeInfo(time , dcPowerState);
+            //    log("onDataStateChanged: notify DcRtInfo changed dcRtInfo=" + dcRtInfo);
+            //    mPhone.notifyDataConnectionRealTimeInfo(dcRtInfo); 
+            //}
 
             if (DBG) {
                 lr("onDataStateChanged: dcsToRetry=" + dcsToRetry

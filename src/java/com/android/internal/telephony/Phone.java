@@ -19,6 +19,7 @@ package com.android.internal.telephony;
 import android.content.Context;
 import android.net.LinkProperties;
 import android.net.NetworkCapabilities;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Message;
 import android.telephony.CellInfo;
@@ -37,6 +38,7 @@ import com.android.internal.telephony.uicc.UsimServiceTable;
 import com.android.internal.telephony.PhoneConstants.*; // ????
 
 import java.util.List;
+import java.util.Locale;
 
 /**
  * Internal interface used to control the phone; SDK developers cannot
@@ -110,6 +112,8 @@ public interface Phone {
     static final String REASON_SINGLE_PDN_ARBITRATION = "SinglePdnArbitration";
     static final String REASON_DATA_SPECIFIC_DISABLED = "specificDisabled";
     static final String REASON_SIM_NOT_READY = "simNotReady";
+    static final String REASON_IWLAN_AVAILABLE = "iwlanAvailable";
+    static final String REASON_CARRIER_CHANGE = "carrierChange";
 
     // Used for band mode selection methods
     static final int BM_UNSPECIFIED = 0; // selected by baseband automatically
@@ -138,6 +142,18 @@ public interface Phone {
     int NT_MODE_LTE_CDMA_EVDO_GSM_WCDMA  = RILConstants.NETWORK_MODE_LTE_CDMA_EVDO_GSM_WCDMA;
     int NT_MODE_LTE_ONLY                 = RILConstants.NETWORK_MODE_LTE_ONLY;
     int NT_MODE_LTE_WCDMA                = RILConstants.NETWORK_MODE_LTE_WCDMA;
+
+    int NT_MODE_TDSCDMA_ONLY            = RILConstants.NETWORK_MODE_TDSCDMA_ONLY;
+    int NT_MODE_TDSCDMA_WCDMA           = RILConstants.NETWORK_MODE_TDSCDMA_WCDMA;
+    int NT_MODE_LTE_TDSCDMA             = RILConstants.NETWORK_MODE_LTE_TDSCDMA;
+    int NT_MODE_TDSCDMA_GSM             = RILConstants.NETWORK_MODE_TDSCDMA_GSM;
+    int NT_MODE_LTE_TDSCDMA_GSM         = RILConstants.NETWORK_MODE_LTE_TDSCDMA_GSM;
+    int NT_MODE_TDSCDMA_GSM_WCDMA       = RILConstants.NETWORK_MODE_TDSCDMA_GSM_WCDMA;
+    int NT_MODE_LTE_TDSCDMA_WCDMA       = RILConstants.NETWORK_MODE_LTE_TDSCDMA_WCDMA;
+    int NT_MODE_LTE_TDSCDMA_GSM_WCDMA   = RILConstants.NETWORK_MODE_LTE_TDSCDMA_GSM_WCDMA;
+    int NT_MODE_TDSCDMA_CDMA_EVDO_GSM_WCDMA = RILConstants.NETWORK_MODE_TDSCDMA_CDMA_EVDO_GSM_WCDMA;
+    int NT_MODE_LTE_TDSCDMA_CDMA_EVDO_GSM_WCDMA = RILConstants.NETWORK_MODE_LTE_TDSCDMA_CDMA_EVDO_GSM_WCDMA;
+
     int PREFERRED_NT_MODE                = RILConstants.PREFERRED_NETWORK_MODE;
 
     // Used for CDMA roaming mode
@@ -370,6 +386,22 @@ public interface Phone {
      */
 
     void unregisterForNewRingingConnection(Handler h);
+
+    /**
+     * Notifies when phone's video capabilities changes <p>
+     *
+     *  Messages received from this:
+     *  Message.obj will be an AsyncResult
+     *  AsyncResult.userObj = obj
+     *  AsyncResult.result = true if phone supports video calling <p>
+     */
+    public void registerForVideoCapabilityChanged(Handler h, int what, Object obj);
+
+    /**
+     * Unregisters for video capability changed notification.
+     * Extraneous calls are tolerated silently
+     */
+    public void unregisterForVideoCapabilityChanged(Handler h);
 
     /**
      * Notifies when an incoming call rings.<p>
@@ -845,15 +877,20 @@ public interface Phone {
      * path is connected (or a call index has been assigned) until
      * PhoneStateChanged notification has occurred.
      *
+     * NOTE: If adding another parameter, consider creating a DialArgs parameter instead to
+     * encapsulate all dial arguments and decrease scaffolding headache.
+     *
      * @param dialString The dial string.
      * @param uusInfo The UUSInfo.
      * @param videoState The desired video state for the connection.
+     * @param intentExtras The extras from the original CALL intent.
      * @exception CallStateException if a new outgoing call is not currently
      *                possible because no more call slots exist or a call exists
      *                that is dialing, alerting, ringing, or waiting. Other
      *                errors are handled asynchronously.
      */
-    Connection dial(String dialString, UUSInfo uusInfo, int videoState) throws CallStateException;
+    Connection dial(String dialString, UUSInfo uusInfo, int videoState, Bundle intentExtras)
+            throws CallStateException;
 
     /**
      * Handles PIN MMI commands (PIN/PIN2/PUK/PUK2), which are initiated
@@ -1119,8 +1156,7 @@ public interface Phone {
      *
      * @see #setNetworkSelectionModeAutomatic(Message)
      */
-    void selectNetworkManually(OperatorInfo network,
-                            Message response);
+    void selectNetworkManually(OperatorInfo network, boolean persistSelection, Message response);
 
     /**
      * Query the radio for the current network selection mode.
@@ -1404,6 +1440,11 @@ public interface Phone {
      * Retrieves the Group Identifier Level1 for GSM phones.
      */
     String getGroupIdLevel1();
+
+    /**
+     * Retrieves the Group Identifier Level2 for phones.
+     */
+    String getGroupIdLevel2();
 
     /**
      * Retrieves the serial number of the ICC, if applicable.
@@ -1888,6 +1929,16 @@ public interface Phone {
     public Phone getImsPhone();
 
     /**
+     * Start listening for IMS service UP/DOWN events.
+     */
+    public void startMonitoringImsService();
+
+    /**
+     * Return if UT capability of ImsPhone is enabled or not
+     */
+    public boolean isUtEnabled();
+
+    /**
      * Release the local instance of the ImsPhone and disconnect from
      * the phone.
      * @return the instance of the ImsPhone phone previously owned
@@ -1924,9 +1975,19 @@ public interface Phone {
     public boolean isRadioAvailable();
 
     /**
+     * Is Radio turned on
+     */
+    public boolean isRadioOn();
+
+    /**
      * shutdown Radio gracefully
      */
     public void shutdownRadio();
+
+    /**
+     * Return true if the device is shutting down.
+     */
+    public boolean isShuttingDown();
 
     /**
      *  Set phone radio capability
@@ -1938,6 +1999,13 @@ public interface Phone {
     public void setRadioCapability(RadioCapability rc, Message response);
 
     /**
+     *  Get phone radio capability
+     *
+     *  @return the capability of the radio defined in RadioCapability
+     */
+    public RadioCapability getRadioCapability();
+
+    /**
      *  Get phone radio access family
      *
      *  @return a bit mask to identify the radio access family.
@@ -1945,11 +2013,21 @@ public interface Phone {
     public int getRadioAccessFamily();
 
     /**
-     *  Get supported phone radio access family
+     *  Get the associated data modems Id.
      *
-     *  @return a bit mask to identify the radio access family.
+     *  @return a String containing the id of the data modem
      */
-    public int getSupportedRadioAccessFamily();
+    public String getModemUuId();
+
+    /**
+     *  The RadioCapability has changed. This comes up from the RIL and is called when radios first
+     *  become available or after a capability switch.  The flow is we use setRadioCapability to
+     *  request a change with the RIL and get an UNSOL response with the new data which gets set
+     *  here.
+     *
+     *  @param rc the phone radio capability currently in effect for this phone.
+     */
+    public void radioCapabilityUpdated(RadioCapability rc);
 
     /**
      * Registers the handler when phone radio  capability is changed.
@@ -1973,4 +2051,51 @@ public interface Phone {
      * @return true if IMS is Registered
      */
     public boolean isImsRegistered();
+
+    /**
+     * Determines if video calling is enabled for the phone.
+     *
+     * @return {@code true} if video calling is enabled, {@code false} otherwise.
+     */
+    public boolean isVideoEnabled();
+
+    /**
+     * @return {@code true} if we are in emergency call back mode. This is a period where the phone
+     * should be using as little power as possible and be ready to receive an incoming call from the
+     * emergency operator.
+     */
+    public boolean isInEcm();
+
+    /**
+     * Returns the Status of Wi-Fi Calling
+     *@hide
+     */
+    public boolean isWifiCallingEnabled();
+
+     /**
+     * Returns the Status of Volte
+     *@hide
+     */
+    public boolean isVolteEnabled();
+
+    /**
+     * @return {@code true} if video call is present, false otherwise.
+     */
+    public boolean isVideoCallPresent();
+
+    /**
+     * Returns the status of Link Capacity Estimation (LCE) service.
+     */
+    public int getLceStatus();
+
+    /**
+     * Returns the locale based on the carrier properties (such as {@code ro.carrier}) and
+     * SIM preferences.
+     */
+    public Locale getLocaleFromSimAndCarrierPrefs();
+
+    /**
+     * Returns the modem activity information
+     */
+    public void getModemActivityInfo(Message response);
 }
