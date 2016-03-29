@@ -2098,4 +2098,9 @@ public interface Phone {
      * Returns the modem activity information
      */
     public void getModemActivityInfo(Message response);
+
+    /**
+     * Set boolean broadcastEmergencyCallStateChanges
+     */
+    public void setBroadcastEmergencyCallStateChanges(boolean broadcast);
 }
